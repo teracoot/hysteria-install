@@ -119,6 +119,17 @@ issue_acme_cert(){
     return 1
 }
 
+apply_hysteria_cert_permissions(){
+    install -d -m 755 /etc/hysteria
+    chmod 644 "$cert_path"
+    if getent group hysteria >/dev/null 2>&1; then
+        chgrp hysteria "$key_path"
+        chmod 640 "$key_path"
+    else
+        chmod 600 "$key_path"
+    fi
+}
+
 issue_lego_cert(){
     local domain="$1"
     local lego_email="$2"
@@ -138,10 +149,10 @@ issue_lego_cert(){
     cert_file=$(find "$lego_home" -type f -name "${domain}.crt" | head -n 1)
     key_file=$(find "$lego_home" -type f -name "${domain}.key" | head -n 1)
     if [[ -n "$cert_file" && -n "$key_file" && -s "$cert_file" && -s "$key_file" ]]; then
-        cp "$cert_file" /root/cert.crt
-        cp "$key_file" /root/private.key
-        chmod 644 /root/cert.crt
-        chmod 600 /root/private.key
+        install -d -m 755 "$(dirname "$cert_path")" "$(dirname "$key_path")"
+        cp "$cert_file" "$cert_path"
+        cp "$key_file" "$key_path"
+        apply_hysteria_cert_permissions
         return 0
     fi
 
@@ -158,15 +169,14 @@ inst_cert(){
     echo ""
     read -rp "请输入选项 [1-3]: " certInput
     if [[ $certInput == 2 ]]; then
-        cert_path="/root/cert.crt"
-        key_path="/root/private.key"
+        cert_path="/etc/hysteria/cert.crt"
+        key_path="/etc/hysteria/private.key"
 
-        chmod -R 777 /root
-        
-        [[ -e /root/cert.crt ]] && chmod +rw /root/cert.crt
-        [[ -e /root/private.key ]] && chmod +rw /root/private.key
+        install -d -m 755 /etc/hysteria
+        [[ -e "$cert_path" ]] && chmod +rw "$cert_path"
+        [[ -e "$key_path" ]] && chmod +rw "$key_path"
 
-        if [[ -f /root/cert.crt && -f /root/private.key ]] && [[ -s /root/cert.crt && -s /root/private.key ]] && [[ -f /root/ca.log ]]; then
+        if [[ -f "$cert_path" && -f "$key_path" ]] && [[ -s "$cert_path" && -s "$key_path" ]] && [[ -f /root/ca.log ]]; then
             domain=$(cat /root/ca.log)
             green "检测到原有域名：$domain 的证书，正在应用"
             hy_domain=$domain
@@ -221,17 +231,18 @@ inst_cert(){
                 bash ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
                 bash ~/.acme.sh/acme.sh --register-account -m "$acme_email" --server letsencrypt || renew_acme_account "$acme_email" || exit 1
                 if issue_acme_cert "$domain" "$acme_email"; then
-                    bash ~/.acme.sh/acme.sh --install-cert -d "$domain" --key-file /root/private.key --fullchain-file /root/cert.crt --ecc || exit 1
+                    bash ~/.acme.sh/acme.sh --install-cert -d "$domain" --key-file "$key_path" --fullchain-file "$cert_path" --ecc || exit 1
                 else
                     issue_lego_cert "$domain" "$acme_email" || exit 1
                 fi
-                if [[ -f /root/cert.crt && -f /root/private.key ]] && [[ -s /root/cert.crt && -s /root/private.key ]]; then
+                apply_hysteria_cert_permissions || exit 1
+                if [[ -f "$cert_path" && -f "$key_path" ]] && [[ -s "$cert_path" && -s "$key_path" ]]; then
                     echo $domain > /root/ca.log
                     sed -i '/--cron/d' /etc/crontab >/dev/null 2>&1
                     echo "0 0 * * * root bash /root/.acme.sh/acme.sh --cron -f >/dev/null 2>&1" >> /etc/crontab
-                    green "证书申请成功! 脚本申请到的证书 (cert.crt) 和私钥 (private.key) 文件已保存到 /root 文件夹下"
-                    yellow "证书crt文件路径如下: /root/cert.crt"
-                    yellow "私钥key文件路径如下: /root/private.key"
+                    green "证书申请成功! 脚本申请到的证书 (cert.crt) 和私钥 (private.key) 文件已保存到 /etc/hysteria 文件夹下"
+                    yellow "证书crt文件路径如下: $cert_path"
+                    yellow "私钥key文件路径如下: $key_path"
                     hy_domain=$domain
                 else
                     red "证书文件未生成或为空，脚本退出，避免继续写入无效 Hysteria 配置"
