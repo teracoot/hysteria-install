@@ -55,9 +55,21 @@ realip(){
 renew_acme_account(){
     local acme_email="$1"
     local le_ca_dir="/root/.acme.sh/ca/acme-v02.api.letsencrypt.org"
+    local backup_suffix
+    backup_suffix="$(date +%s)"
+
+    if [[ -f /root/.acme.sh/account.conf ]]; then
+        yellow "检测到 acme.sh 账号配置异常，正在备份旧账号配置: /root/.acme.sh/account.conf.bak.$backup_suffix"
+        mv /root/.acme.sh/account.conf "/root/.acme.sh/account.conf.bak.$backup_suffix"
+    fi
+
+    if [[ -f /root/.acme.sh/account.key ]]; then
+        yellow "检测到 acme.sh 账号密钥异常，正在备份旧账号密钥: /root/.acme.sh/account.key.bak.$backup_suffix"
+        mv /root/.acme.sh/account.key "/root/.acme.sh/account.key.bak.$backup_suffix"
+    fi
 
     if [[ -d "$le_ca_dir" ]]; then
-        local backup_dir="${le_ca_dir}.bak.$(date +%s)"
+        local backup_dir="${le_ca_dir}.bak.$backup_suffix"
         yellow "检测到 Let's Encrypt 账号状态异常，正在备份旧账号目录: $backup_dir"
         mv "$le_ca_dir" "$backup_dir"
     fi
