@@ -74,7 +74,9 @@ renew_acme_account(){
         mv "$le_ca_dir" "$backup_dir"
     fi
 
+    bash ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
     bash ~/.acme.sh/acme.sh --register-account -m "$acme_email" --server letsencrypt
+    bash ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 }
 
 issue_acme_cert(){
@@ -83,7 +85,7 @@ issue_acme_cert(){
     local issue_log
     issue_log=$(mktemp)
 
-    local issue_cmd=(bash ~/.acme.sh/acme.sh --issue -d "$domain" --standalone -k ec-256 --insecure)
+    local issue_cmd=(bash ~/.acme.sh/acme.sh --issue --server letsencrypt -d "$domain" --standalone -k ec-256 --insecure)
     if [[ -n $(echo "$ip" | grep ":") ]]; then
         issue_cmd+=(--listen-v6)
     fi
