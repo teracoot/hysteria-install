@@ -130,6 +130,61 @@ apply_hysteria_cert_permissions(){
     fi
 }
 
+install_acme_renewal(){
+    sed -i '/hysteria-lego-renew/d' /etc/crontab >/dev/null 2>&1
+    sed -i '/\/root\/\.acme\.sh.*--cron/d' /etc/crontab >/dev/null 2>&1
+    echo "0 0 * * * root bash /root/.acme.sh/acme.sh --cron -f >/dev/null 2>&1" >> /etc/crontab
+}
+
+install_lego_renewal(){
+    local domain="$1"
+    local lego_email="$2"
+
+    install -d -m 755 /etc/hysteria
+    cat << EOF > /etc/hysteria/lego-renew.env
+LEGO_DOMAIN='$domain'
+LEGO_EMAIL='$lego_email'
+LEGO_PATH='/root/.lego-hysteria'
+HYSTERIA_CERT_PATH='$cert_path'
+HYSTERIA_KEY_PATH='$key_path'
+EOF
+    chmod 600 /etc/hysteria/lego-renew.env
+
+    cat << 'EOF' > /usr/local/bin/hysteria-lego-renew
+#!/usr/bin/env bash
+set -euo pipefail
+
+. /etc/hysteria/lego-renew.env
+
+lego --accept-tos --email "$LEGO_EMAIL" --domains "$LEGO_DOMAIN" --path "$LEGO_PATH" --http renew --days 30
+
+cert_file=$(find "$LEGO_PATH" -type f -name "${LEGO_DOMAIN}.crt" | head -n 1)
+key_file=$(find "$LEGO_PATH" -type f -name "${LEGO_DOMAIN}.key" | head -n 1)
+if [[ -z "$cert_file" || -z "$key_file" || ! -s "$cert_file" || ! -s "$key_file" ]]; then
+    echo "lego renewal did not produce usable cert/key files" >&2
+    exit 1
+fi
+
+install -d -m 755 "$(dirname "$HYSTERIA_CERT_PATH")" "$(dirname "$HYSTERIA_KEY_PATH")"
+cp "$cert_file" "$HYSTERIA_CERT_PATH"
+cp "$key_file" "$HYSTERIA_KEY_PATH"
+chmod 644 "$HYSTERIA_CERT_PATH"
+if getent group hysteria >/dev/null 2>&1; then
+    chgrp hysteria "$HYSTERIA_KEY_PATH"
+    chmod 640 "$HYSTERIA_KEY_PATH"
+else
+    chmod 600 "$HYSTERIA_KEY_PATH"
+fi
+
+systemctl restart hysteria-server
+EOF
+    chmod 755 /usr/local/bin/hysteria-lego-renew
+
+    sed -i '/hysteria-lego-renew/d' /etc/crontab >/dev/null 2>&1
+    sed -i '/\/root\/\.acme\.sh.*--cron/d' /etc/crontab >/dev/null 2>&1
+    echo "17 3 * * * root /usr/local/bin/hysteria-lego-renew >/dev/null 2>&1" >> /etc/crontab
+}
+
 issue_lego_cert(){
     local domain="$1"
     local lego_email="$2"
@@ -153,6 +208,7 @@ issue_lego_cert(){
         cp "$cert_file" "$cert_path"
         cp "$key_file" "$key_path"
         apply_hysteria_cert_permissions
+        cert_issuer="lego"
         return 0
     fi
 
@@ -230,6 +286,7 @@ inst_cert(){
                 bash ~/.acme.sh/acme.sh --upgrade --auto-upgrade
                 bash ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
                 bash ~/.acme.sh/acme.sh --register-account -m "$acme_email" --server letsencrypt || renew_acme_account "$acme_email" || exit 1
+                cert_issuer="acme"
                 if issue_acme_cert "$domain" "$acme_email"; then
                     bash ~/.acme.sh/acme.sh --install-cert -d "$domain" --key-file "$key_path" --fullchain-file "$cert_path" --ecc || exit 1
                 else
@@ -238,8 +295,11 @@ inst_cert(){
                 apply_hysteria_cert_permissions || exit 1
                 if [[ -f "$cert_path" && -f "$key_path" ]] && [[ -s "$cert_path" && -s "$key_path" ]]; then
                     echo $domain > /root/ca.log
-                    sed -i '/--cron/d' /etc/crontab >/dev/null 2>&1
-                    echo "0 0 * * * root bash /root/.acme.sh/acme.sh --cron -f >/dev/null 2>&1" >> /etc/crontab
+                    if [[ ${cert_issuer:-acme} == "lego" ]]; then
+                        install_lego_renewal "$domain" "$acme_email"
+                    else
+                        install_acme_renewal
+                    fi
                     green "证书申请成功! 脚本申请到的证书 (cert.crt) 和私钥 (private.key) 文件已保存到 /etc/hysteria 文件夹下"
                     yellow "证书crt文件路径如下: $cert_path"
                     yellow "私钥key文件路径如下: $key_path"
