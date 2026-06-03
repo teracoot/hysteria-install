@@ -119,6 +119,36 @@ issue_acme_cert(){
     return 1
 }
 
+issue_lego_cert(){
+    local domain="$1"
+    local lego_email="$2"
+    local lego_home="/root/.lego-hysteria"
+    local cert_file
+    local key_file
+
+    yellow "acme.sh 证书申请失败，正在尝试使用 lego 作为备用 ACME 客户端"
+    if ! command -v lego >/dev/null 2>&1; then
+        ${PACKAGE_INSTALL[int]} lego || return 1
+    fi
+
+    rm -rf "$lego_home"
+    mkdir -p "$lego_home"
+    lego --accept-tos --email "$lego_email" --domains "$domain" --path "$lego_home" --http run || return 1
+
+    cert_file=$(find "$lego_home" -type f -name "${domain}.crt" | head -n 1)
+    key_file=$(find "$lego_home" -type f -name "${domain}.key" | head -n 1)
+    if [[ -n "$cert_file" && -n "$key_file" && -s "$cert_file" && -s "$key_file" ]]; then
+        cp "$cert_file" /root/cert.crt
+        cp "$key_file" /root/private.key
+        chmod 644 /root/cert.crt
+        chmod 600 /root/private.key
+        return 0
+    fi
+
+    red "lego 未生成有效证书文件，脚本退出"
+    return 1
+}
+
 inst_cert(){
     green "Hysteria 2 协议证书申请方式如下："
     echo ""
@@ -190,8 +220,11 @@ inst_cert(){
                 bash ~/.acme.sh/acme.sh --upgrade --auto-upgrade
                 bash ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
                 bash ~/.acme.sh/acme.sh --register-account -m "$acme_email" --server letsencrypt || renew_acme_account "$acme_email" || exit 1
-                issue_acme_cert "$domain" "$acme_email" || exit 1
-                bash ~/.acme.sh/acme.sh --install-cert -d "$domain" --key-file /root/private.key --fullchain-file /root/cert.crt --ecc || exit 1
+                if issue_acme_cert "$domain" "$acme_email"; then
+                    bash ~/.acme.sh/acme.sh --install-cert -d "$domain" --key-file /root/private.key --fullchain-file /root/cert.crt --ecc || exit 1
+                else
+                    issue_lego_cert "$domain" "$acme_email" || exit 1
+                fi
                 if [[ -f /root/cert.crt && -f /root/private.key ]] && [[ -s /root/cert.crt && -s /root/private.key ]]; then
                     echo $domain > /root/ca.log
                     sed -i '/--cron/d' /etc/crontab >/dev/null 2>&1
