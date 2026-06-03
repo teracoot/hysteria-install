@@ -52,6 +52,50 @@ realip(){
     ip=$(curl -s4m8 ip.gs -k) || ip=$(curl -s6m8 ip.gs -k)
 }
 
+renew_acme_account(){
+    local acme_email="$1"
+    local le_ca_dir="/root/.acme.sh/ca/acme-v02.api.letsencrypt.org"
+
+    if [[ -d "$le_ca_dir" ]]; then
+        local backup_dir="${le_ca_dir}.bak.$(date +%s)"
+        yellow "检测到 Let's Encrypt 账号状态异常，正在备份旧账号目录: $backup_dir"
+        mv "$le_ca_dir" "$backup_dir"
+    fi
+
+    bash ~/.acme.sh/acme.sh --register-account -m "$acme_email" --server letsencrypt
+}
+
+issue_acme_cert(){
+    local domain="$1"
+    local acme_email="$2"
+    local issue_log
+    issue_log=$(mktemp)
+
+    local issue_cmd=(bash ~/.acme.sh/acme.sh --issue -d "$domain" --standalone -k ec-256 --insecure)
+    if [[ -n $(echo "$ip" | grep ":") ]]; then
+        issue_cmd+=(--listen-v6)
+    fi
+
+    if "${issue_cmd[@]}" > "$issue_log" 2>&1; then
+        cat "$issue_log"
+        rm -f "$issue_log"
+        return 0
+    fi
+
+    cat "$issue_log"
+    if grep -q "accountDoesNotExist" "$issue_log"; then
+        yellow "Let's Encrypt 返回 accountDoesNotExist，正在重新注册 acme.sh 账号后重试一次"
+        rm -f "$issue_log"
+        renew_acme_account "$acme_email" || return 1
+        "${issue_cmd[@]}"
+        return $?
+    fi
+
+    red "证书申请失败，请检查域名解析、80端口占用、防火墙或添加 --debug 查看 acme.sh 日志"
+    rm -f "$issue_log"
+    return 1
+}
+
 inst_cert(){
     green "Hysteria 2 协议证书申请方式如下："
     echo ""
@@ -117,16 +161,14 @@ inst_cert(){
                     systemctl start cron
                     systemctl enable cron
                 fi
-                curl https://get.acme.sh | sh -s email=$(date +%s%N | md5sum | cut -c 1-16)@gmail.com
+                acme_email="$(date +%s%N | md5sum | cut -c 1-16)@gmail.com"
+                curl https://get.acme.sh | sh -s email="$acme_email"
                 source ~/.bashrc
                 bash ~/.acme.sh/acme.sh --upgrade --auto-upgrade
                 bash ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-                if [[ -n $(echo $ip | grep ":") ]]; then
-                    bash ~/.acme.sh/acme.sh --issue -d ${domain} --standalone -k ec-256 --listen-v6 --insecure
-                else
-                    bash ~/.acme.sh/acme.sh --issue -d ${domain} --standalone -k ec-256 --insecure
-                fi
-                bash ~/.acme.sh/acme.sh --install-cert -d ${domain} --key-file /root/private.key --fullchain-file /root/cert.crt --ecc
+                bash ~/.acme.sh/acme.sh --register-account -m "$acme_email" --server letsencrypt || renew_acme_account "$acme_email" || exit 1
+                issue_acme_cert "$domain" "$acme_email" || exit 1
+                bash ~/.acme.sh/acme.sh --install-cert -d "$domain" --key-file /root/private.key --fullchain-file /root/cert.crt --ecc || exit 1
                 if [[ -f /root/cert.crt && -f /root/private.key ]] && [[ -s /root/cert.crt && -s /root/private.key ]]; then
                     echo $domain > /root/ca.log
                     sed -i '/--cron/d' /etc/crontab >/dev/null 2>&1
@@ -135,6 +177,9 @@ inst_cert(){
                     yellow "证书crt文件路径如下: /root/cert.crt"
                     yellow "私钥key文件路径如下: /root/private.key"
                     hy_domain=$domain
+                else
+                    red "证书文件未生成或为空，脚本退出，避免继续写入无效 Hysteria 配置"
+                    exit 1
                 fi
             else
                 red "当前域名解析的IP与当前VPS使用的真实IP不匹配"
