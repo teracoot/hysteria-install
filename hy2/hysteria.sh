@@ -472,7 +472,7 @@ EOF
         last_ip=$ip
     fi
 
-    mkdir /root/hy
+    mkdir -p /root/hy
     cat << EOF > /root/hy/hy-client.yaml
 server: $last_ip:$last_port
 
