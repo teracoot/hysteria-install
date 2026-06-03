@@ -87,8 +87,17 @@ issue_acme_cert(){
         yellow "Let's Encrypt 返回 accountDoesNotExist，正在重新注册 acme.sh 账号后重试一次"
         rm -f "$issue_log"
         renew_acme_account "$acme_email" || return 1
-        "${issue_cmd[@]}"
-        return $?
+        yellow "等待 Let's Encrypt 账号状态同步后重试"
+        sleep 15
+        if "${issue_cmd[@]}" > "$issue_log" 2>&1; then
+            cat "$issue_log"
+            rm -f "$issue_log"
+            return 0
+        fi
+        cat "$issue_log"
+        rm -f "$issue_log"
+        red "重新注册 acme.sh 账号后证书申请仍然失败，脚本退出"
+        return 1
     fi
 
     red "证书申请失败，请检查域名解析、80端口占用、防火墙或添加 --debug 查看 acme.sh 日志"
@@ -110,8 +119,8 @@ inst_cert(){
 
         chmod -R 777 /root
         
-        chmod +rw /root/cert.crt
-        chmod +rw /root/private.key
+        [[ -e /root/cert.crt ]] && chmod +rw /root/cert.crt
+        [[ -e /root/private.key ]] && chmod +rw /root/private.key
 
         if [[ -f /root/cert.crt && -f /root/private.key ]] && [[ -s /root/cert.crt && -s /root/private.key ]] && [[ -f /root/ca.log ]]; then
             domain=$(cat /root/ca.log)
